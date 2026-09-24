@@ -30,6 +30,7 @@ import { extractUrlsFromText } from '@/lib/reference-links';
 import { scrapeUrlsDetailed } from '@/lib/services/scraper.service';
 import { formatScrapeResultsForPrompt, type ScrapeUrlResult } from '@/lib/scrape-result';
 import { classifyTier1Intent } from '@/lib/decision-router/tier1-classifier';
+import { queryDecisionService } from '@/lib/services/decision.service';
 
 export const maxDuration = 30;
 
@@ -145,6 +146,56 @@ export async function POST(req: Request) {
         suggestedGoal: tier1Decision.suggestedGoal || '',
         offline: true,
       });
+    }
+
+    // שרשרת החלטה - שכבה 2: מודל החלטה ייעודי (Laya על מק מיני / שירות מרוחק)
+    const tier2Decision = await queryDecisionService(message, {
+      hasScrapedContext: Boolean(scrapedLinkContext),
+      intakeAlreadyShown,
+      existingTopicGuess,
+    });
+
+    if (tier2Decision && !tier2Decision.fallback_to_llm && tier2Decision.confidence >= 0.7) {
+      if (tier2Decision.action === 'confirm_continue') {
+        const defaultSlides = recommendedSlideCountForTopic(existingTopicGuess || message);
+        const styleRec = nicheStyleRecommendation(existingTopicGuess || message);
+        return NextResponse.json({
+          reply: 'מעולה, הכל מאושר ומדויק! אני מייצר כעת את כיווני הקרוסלה המובילים...',
+          topic: existingTopicGuess || message,
+          phase: 'ready_for_directions',
+          readyForDirections: true,
+          applyRecommendedAll: true,
+          suggestedSlideCount: defaultSlides,
+          suggestedDensity: 'balanced',
+          suggestedVisualStyle: styleRec.style,
+          suggestedVisualStyleCustom: styleRec.styleReason || '',
+          useRecommendedStructure: true,
+          suggestedAudience: 'קהל יעד רלוונטי לתחום',
+          suggestedGoal: 'מעורבות והנעה לפעולה',
+          offline: false,
+          tier: 'tier2_laya',
+        });
+      }
+
+      if (tier2Decision.action === 'pick_option' && existingTopicGuess) {
+        const styleRec = nicheStyleRecommendation(existingTopicGuess);
+        return NextResponse.json({
+          reply: 'מצוין, בחרת בכיוון זה! בוא נקבע את מספר השקופיות והסטייל. מה הכי מתאים לך?',
+          topic: existingTopicGuess,
+          phase: 'intake',
+          readyForDirections: false,
+          applyRecommendedAll: false,
+          suggestedSlideCount: recommendedSlideCountForTopic(existingTopicGuess),
+          suggestedDensity: 'balanced',
+          suggestedVisualStyle: styleRec.style,
+          suggestedVisualStyleCustom: '',
+          useRecommendedStructure: true,
+          suggestedAudience: '',
+          suggestedGoal: '',
+          offline: false,
+          tier: 'tier2_laya',
+        });
+      }
     }
 
     const historyText = (history || [])
